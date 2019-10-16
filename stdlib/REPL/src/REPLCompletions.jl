@@ -7,11 +7,16 @@ export completions, shell_completions, bslash_completions, completion_text
 using Base.Meta
 using Base: propertynames, something
 
+using ..REPL: REPL
+
 abstract type Completion end
 
 struct KeywordCompletion <: Completion
     keyword::String
+    score::Float64
 end
+KeywordCompletion(keyword::String) = KeywordCompletion(keyword, Inf)
+KeywordCompletion(keyword::String, query::String) = KeywordCompletion(keyword, fuzzyscore(keyword, query))
 
 struct PathCompletion <: Completion
     path::String
@@ -20,21 +25,33 @@ end
 struct ModuleCompletion <: Completion
     parent::Module
     mod::String
+    score::Float64
 end
+ModuleCompletion(parent::Module, mod::String) = ModuleCompletion(parent, mod, Inf)
+ModuleCompletion(parent::Module, mod::String, query::String) = ModuleCompletion(parent, mod, fuzzyscore(mod, query))
 
 struct PackageCompletion <: Completion
     package::String
+    score::Float64
 end
+PackageCompletion(package::String) = PackageCompletion(package, Inf)
+PackageCompletion(package::String, query::String) = PackageCompletion(package, fuzzyscore(package, query))
 
 struct PropertyCompletion <: Completion
     value
     property::Symbol
+    score::Float64
 end
+PropertyCompletion(value, property::Symbol) = PropertyCompletion(value, property, Inf)
+PropertyCompletion(value, property::Symbol, query::String) = PropertyCompletion(value, property, fuzzyscore(property, query))
 
 struct FieldCompletion <: Completion
     typ::DataType
     field::Symbol
+    score::Float64
 end
+FieldCompletion(typ::DataType, field::Symbol) = FieldCompletion(typ, field, Inf)
+FieldCompletion(typ::DataType, field::Symbol, query::String) = FieldCompletion(typ, field, fuzzyscore(field, query))
 
 struct MethodCompletion <: Completion
     func
@@ -44,7 +61,10 @@ end
 
 struct BslashCompletion <: Completion
     bslash::String
+    score::Float64
 end
+BslashCompletion(bslash::String) = BslashCompletion(bslash, Inf)
+BslashCompletion(bslash::String, query::String) = BslashCompletion(bslash, fuzzyscore(bslash, query))
 
 struct ShellCompletion <: Completion
     text::String
@@ -53,7 +73,10 @@ end
 struct DictCompletion <: Completion
     dict::AbstractDict
     key::String
+    score::Float64
 end
+DictCompletion(dict::AbstractDict, key::String) = DictCompletion(dict, key, Inf)
+DictCompletion(dict::AbstractDict, key::String, query::String) = DictCompletion(dict, key, fuzzyscore(key, query))
 
 completion_text(c::KeywordCompletion) = c.keyword
 completion_text(c::PathCompletion) = c.path
@@ -65,6 +88,13 @@ completion_text(c::MethodCompletion) = sprint(io -> show(io, c.method))
 completion_text(c::BslashCompletion) = c.bslash
 completion_text(c::ShellCompletion) = c.text
 completion_text(c::DictCompletion) = c.key
+
+score(c::Completion) = c.score
+score(c::PathCompletion) = 0.0
+score(c::MethodCompletion) = 0.0
+score(c::ShellCompletion) = 0.0
+
+fuzzyscore(str, query) = REPL.fuzzyscore(string(query), string(str))
 
 const Completions = Tuple{Vector{Completion}, UnitRange{Int64}, Bool}
 
@@ -89,8 +119,8 @@ function filtered_mod_names(ffunc::Function, mod::Module, name::AbstractString, 
     macros =  filter(x -> startswith(x, "@" * name), syms)
     appendmacro!(syms, macros, "_str", "\"")
     appendmacro!(syms, macros, "_cmd", "`")
-    filter!(x->completes_global(x, name), syms)
-    return [ModuleCompletion(mod, sym) for sym in syms]
+    # filter!(x->completes_global(x, name), syms)
+    return [ModuleCompletion(mod, sym, name) for sym in syms]
 end
 
 # REPL Symbol Completions
@@ -146,9 +176,7 @@ function complete_symbol(sym, ffunc, context_module=Main)::Vector{Completion}
     elseif val !== nothing # looking for a property of an instance
         for property in propertynames(val, false)
             s = string(property)
-            if startswith(s, name)
-                push!(suggestions, PropertyCompletion(val, property))
-            end
+            push!(suggestions, PropertyCompletion(val, property, name))
         end
     else
         # Looking for a member of a type
@@ -156,9 +184,7 @@ function complete_symbol(sym, ffunc, context_module=Main)::Vector{Completion}
             fields = fieldnames(t)
             for field in fields
                 s = string(field)
-                if startswith(s, name)
-                    push!(suggestions, FieldCompletion(t, field))
-                end
+                push!(suggestions, FieldCompletion(t, field, name))
             end
         end
     end
@@ -177,11 +203,7 @@ function complete_keyword(s::Union{String,SubString{String}})::Vector{Completion
     r = searchsorted(sorted_keywords, s)
     i = first(r)
     n = length(sorted_keywords)
-    while i <= n && startswith(sorted_keywords[i],s)
-        r = first(r):i
-        i += 1
-    end
-    map(KeywordCompletion, sorted_keywords[r])
+    return [KeywordCompletion(keyword, s) for keyword in sorted_keywords]
 end
 
 function complete_path(path::AbstractString, pos; use_envpath=false)::Completions
@@ -540,7 +562,7 @@ end
     matches = []
     for key in keys(identifier)
         rkey = repr(key)
-        startswith(rkey,partial_key) && push!(matches,rkey)
+        push!(matches,rkey)
     end
     return matches
 end
@@ -578,7 +600,7 @@ function completions(string, pos, context_module=Main)::Completions
     if identifier !== nothing
         matches = find_dict_matches(identifier, partial_key)
         length(matches)==1 && (lastindex(string) <= pos || string[nextind(string,pos)] != ']') && (matches[1]*=']')
-        length(matches)>0 && return [DictCompletion(identifier, match) for match in sort!(matches)], loc:pos, true
+        length(matches)>0 && return [DictCompletion(identifier, match, partial_key) for match in sort!(matches)], loc:pos, false
     end
 
     # otherwise...
@@ -701,7 +723,7 @@ function completions(string, pos, context_module=Main)::Completions
         end
     end
     append!(suggestions, complete_symbol(s, ffunc, context_module))
-    return sort!(unique(suggestions), by=completion_text), (dotpos+1):pos, true
+    return sort!(suggestions, by=score, rev=true)[1:min(end, 50)], (dotpos+1):pos, false
 end
 
 function shell_completions(string, pos)::Completions
