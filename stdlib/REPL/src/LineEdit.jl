@@ -475,7 +475,9 @@ function refresh_multi_line(termbuf::TerminalBuffer, terminal::UnixTerminal, buf
         lwrite = region_active ? highlight_region(line, regstart, regstop, written, slength) :
                                  line
         written += slength
+        write(termbuf, "\e]633;F\a")
         cmove_col(termbuf, lindent + 1)
+        write(termbuf, "\e]633;G\a")
         write(termbuf, lwrite)
         # We expect to be line after the last valid output line (due to
         # the '\n' at the end of the previous line)
